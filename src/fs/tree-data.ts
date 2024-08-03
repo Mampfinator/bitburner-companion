@@ -50,7 +50,9 @@ export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvide
     async getTreeItem(element: FileData): Promise<vscode.TreeItem> {
         this.logger.info(`[fs] getTreeItem: ${JSON.stringify(element)}`);
         if (!element.filename) {
-            return new vscode.TreeItem(element.server, vscode.TreeItemCollapsibleState.Collapsed);
+            const item = new vscode.TreeItem(element.server, vscode.TreeItemCollapsibleState.Collapsed);
+            item.iconPath = new vscode.ThemeIcon("server");
+            return item;
         } else {
             // path is a file
             if (/\./.test(element.filename)) {
@@ -67,9 +69,13 @@ export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvide
                     ],
                 };
 
+                fileItem.iconPath = vscode.ThemeIcon.File;
+
                 return fileItem;
             } else {
-                return new vscode.TreeItem(lastSegment(element.filename), vscode.TreeItemCollapsibleState.Collapsed);
+                const item = new vscode.TreeItem(lastSegment(element.filename), vscode.TreeItemCollapsibleState.Collapsed);
+                item.iconPath = vscode.ThemeIcon.Folder;
+                return item;
             }
         }
     }
