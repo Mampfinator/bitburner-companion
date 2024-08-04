@@ -180,7 +180,7 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
             const range = new vscode.Range(hit.line, hit.char, hit.line, hit.char + hit.length);
             return new vscode.CodeLens(range, {
                 command: "noop",
-                title: `${hit.cost} GB`
+                title: `RAM usage: ${hit.cost} GB`,
             });
         });
     }
