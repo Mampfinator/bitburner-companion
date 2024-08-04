@@ -14,13 +14,13 @@ function removeLeadingSlash(path?: string): string | undefined {
         : path;
 }
 
-export function normalizePath(path?: string): string | undefined {
+export function normalizePath<T extends string | undefined>(path: T): T {
     if (!path) {
         return path;
     }
 
-    path = removeLeadingSlash(path)!;
-    path = path.replaceAll("\\", "/");
+    path = removeLeadingSlash(path)! as T;
+    path = path!.replaceAll("\\", "/") as T;
     return path;
 }
 

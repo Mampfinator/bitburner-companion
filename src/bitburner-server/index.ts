@@ -7,12 +7,16 @@ export const DEFAULT_CONFIG: BitburnerConfig = {
     port: 12525, 
     messageTimeout: 10000,
     relayServers: [],
+    useServerFolders: false,
+    scriptFolder: "src",
 };
 
 export interface BitburnerConfig {
     port: number;
     relayServers: string[];
     messageTimeout: number;
+    useServerFolders: boolean;
+    scriptFolder: string;
 }
 
 function normalizeAddress(address: string) {
@@ -42,7 +46,11 @@ export class BitburnerServer implements Disposable {
     private recheckTimeout?: NodeJS.Timeout;
     private failedRelays = new Set<string>();
 
-    constructor(private config: BitburnerConfig, public readonly logger: IVSCodeExtLogger) {
+    get config() {
+        return structuredClone(this._config);
+    }
+
+    constructor(private _config: BitburnerConfig, public readonly logger: IVSCodeExtLogger) {
         this.start();
         this.syncRelayConnections();
 
@@ -210,7 +218,7 @@ export class BitburnerServer implements Disposable {
     }
 
     private setupServer(): WebSocketServer {
-        const wss = new WebSocketServer({port: this.config.port});
+        const wss = new WebSocketServer({port: this._config.port});
 
         wss.on("connection", (ws) => {
             // we're assuming one game instance at a time.
@@ -229,7 +237,7 @@ export class BitburnerServer implements Disposable {
         });
 
         wss.on("listening", () => {
-            this.logger.info(`[server] listening on port ${this.config.port}`);
+            this.logger.info(`[server] listening on port ${this._config.port}`);
         });
 
         return wss;
@@ -282,11 +290,11 @@ export class BitburnerServer implements Disposable {
     //#endregion
 
     public updateConfig(config: Partial<BitburnerConfig>) {
-        const old = structuredClone(this.config) as typeof this.config;
-        Object.assign(this.config, config);
+        const old = structuredClone(this._config) as typeof this._config;
+        Object.assign(this._config, config);
 
-        if (old.port !== this.config.port) {
-            this.logger.info(`[server] changing port from ${old.port} to ${this.config.port}`);
+        if (old.port !== this._config.port) {
+            this.logger.info(`[server] changing port from ${old.port} to ${this._config.port}`);
             this.wss.close();
             this.wss = this.setupServer();
         }
@@ -295,9 +303,9 @@ export class BitburnerServer implements Disposable {
     }
 
     public syncRelayConnections() {
-        this.logger.info(`[server] syncing ${this.config.relayServers.length} relay servers: ${this.config.relayServers.join(", ")}`);
+        this.logger.info(`[server] syncing ${this._config.relayServers.length} relay servers: ${this._config.relayServers.join(", ")}`);
         const seen = new Set<string>();
-        for (const address of this.config.relayServers.map(address => normalizeAddress(address))) {
+        for (const address of this._config.relayServers.map(address => normalizeAddress(address))) {
             if (!this.relayConnections.has(address) && !this.failedRelays.has(address)) {
                 this.addRelay(address).catch(() => {});
             }
@@ -355,7 +363,7 @@ export class BitburnerServer implements Disposable {
                     this.messagePromises.delete(fullMessage.id);
                     reject(new BitburnerError(BitburnerErrorCode.ResponseTimeout, "response timeout"));   
                 }
-            }, this.config.messageTimeout!);
+            }, this._config.messageTimeout!);
 
         });
 

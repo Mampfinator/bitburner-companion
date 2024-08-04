@@ -54,8 +54,19 @@
         "bitburner-companion.relayServers": {
           "title": "Relay Servers",
           "description": "Addresses of other Bitburner RPC servers to connect to and relay through this server. This effectively allows you to have the game connected to multiple servers at once.",
-          "type": "array",
-          "examples": ["localhost:22222", "127.0.0.1:22222", "ws://localhost:23555"]
+          "type": "array"
+        },
+        "bitburner-companion.useServerFolders": {
+          "title": "Use Server Folders",
+          "description": "If true, the extension will assume the first folder of a script to represent the server the script should be on.",
+          "type": "boolean",
+          "default": false
+        },
+        "bitburner-companion.scriptFolder": {
+          "title": "Script Folder",
+          "description": "Base folder for all your scripts. Only scripts in this folder will have RAM displayed and will be synced to the game.",
+          "type": "string",
+          "default": "src"
         }
       }
     }

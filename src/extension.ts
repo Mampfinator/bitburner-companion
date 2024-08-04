@@ -6,6 +6,7 @@ import { BitburnerConfig, BitburnerServer, DEFAULT_CONFIG } from './bitburner-se
 import { BitburnerFilesystemProvider } from './fs/filesystem-provider';
 import { BitburnerRemoteFsTreeDataProvider } from './fs/tree-data';
 import { parseUri } from './fs/util';
+import { RamDisplayProvider } from './ram-display';
 
 function getServerSettings(settings: vscode.WorkspaceConfiguration): BitburnerConfig {
 	const config = {} as Partial<BitburnerConfig>;
@@ -26,14 +27,14 @@ export function activate(context: vscode.ExtensionContext) {
 		logPath: context.logUri.fsPath,
 		logOutputChannel: vscode.window.createOutputChannel("Bitburner Sync"),
 		sourceLocationTracking: false,
-		logConsole: false,
+		logConsole: true,
 	});
 
 	let settings = getServerSettings(vscode.workspace.getConfiguration("bitburner-companion"));
 	const server = new BitburnerServer(settings, logger);
 
 	const restartServer = vscode.commands.registerCommand("bitburner-companion.restart-server", () => {
-		server[Symbol.dispose]();
+		server.dispose();
 		server.start();
 	});
 
@@ -125,42 +126,7 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	// RAM-usage status bar hint
-	vscode.window.onDidChangeActiveTextEditor(async (editor) => {
-		const uri = editor?.document.uri;
-		
-		if (!uri) {
-			ramUsageIcon.hide();
-			return;
-		}
-
-		const filePath = parseUri(uri);
-
-		if (!filePath.filename) {
-			logger.error("Failed to parse uri for RAM usage hint.");
-			setRamUsage(undefined);
-			return;
-		}
-
-		let filename: string;
-		let hostname: string;
-
-		if (uri.scheme === "bitburner") {
-			hostname = filePath.server;
-			filename = filePath.filename!;
-		} else if (uri.scheme === "file") {
-			// for now, blindly remap ${workspaceFolder}/src/ to home/ and replace extension with .js
-			// TODO: find a way to automatically associate workspace files with home files
-			hostname = "home";
-			filename = uri.path.replace(/.+?\/src\//, "/").replace(/\.ts$/, ".js");
-		} else {
-			setRamUsage(undefined);
-			return;
-		}
-
-		const ramUsage = await server.calculateRam(filename, hostname).catch(() => {});
-		setRamUsage(ramUsage);
-	});
+	const ramDisplayProvider = new RamDisplayProvider(server);
 	
 
 	context.subscriptions.push(
@@ -176,9 +142,8 @@ export function activate(context: vscode.ExtensionContext) {
 		remoteFs,
 		ramUsageIcon,
 		reconnectRelays,
+		ramDisplayProvider,
 	);
-
-	
 }
 
 // This method is called when your extension is deactivated
