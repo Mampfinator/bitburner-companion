@@ -144,16 +144,9 @@ function* iterTokens(semanticTokens: vscode.SemanticTokens): Iterable<[number, n
     let char = 0;
 
     for (const [deltaLine, deltaStartChar, length, type, modifiers] of windows<number, [number, number, number, number, number]>(semanticTokens.data, 5)) {
-        if (deltaLine > 0) {
-            line += deltaLine;
-            char = 0;
-        }
-
-        char += deltaStartChar;
-
+        line += deltaLine;
+        char = (deltaLine === 0) ? char + deltaStartChar : deltaStartChar;
         yield [line, char, length, type, modifiers];
-
-        char += length;
     }
 }
 
@@ -164,7 +157,7 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
     readonly disposables: vscode.Disposable[] = [];
 
     constructor(
-        private readonly ramDisplay: RamDisplayProvider
+        ramDisplay: RamDisplayProvider
     ) {
         this.logger = ramDisplay.logger;
 
@@ -203,27 +196,31 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
         const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>("vscode.provideDocumentSemanticTokensLegend", document.uri);
         const semanticTokens = await vscode.commands.executeCommand<vscode.SemanticTokens>("vscode.provideDocumentSemanticTokens", document.uri);
 
-        for (const [line, startChar, length, tokenType,,] of iterTokens(semanticTokens)) {
+        function getTokenName(line: number, char: number, length: number) {
+            const token = document.lineAt(line).text.substring(char, char + length);
+            return token;
+        }
+
+        for (const [line, startChar, length, tokenType, modifiers] of iterTokens(semanticTokens)) {
             if (legend.tokenTypes[tokenType] === "variable") {
-                const variableName = document.lineAt(line).text.substring(startChar, startChar + length);
+                const variableName = getTokenName(line, startChar, length);
                 if (variableName === "window" || variableName === "document") {
                     hits.push({ line: line, char: startChar, length, cost: 25 });
                 }
             }
 
-            else if (legend.tokenTypes[tokenType] === "method") {
+            else if (legend.tokenTypes[tokenType] === "method" || (legend.tokenTypes[tokenType] === "property" && modifiers === 0)) {
                 const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", document.uri, new vscode.Position(line, startChar), undefined);
                 if (hovers && hovers.length > 0) {
                     const hoverText = hovers.map(hover => hover.contents).flat().map(c => typeof c === "string" ? c : c.value).join("");
 
-                    const costText = hoverText.match(/(?<=RAM cost\: )\d+(\.\d+)?(?= GB)/);
-
+                    const costText = hoverText.match(/(?<=RAM cost\: *)\d+(\.\d+)?(?= *GB)/);
                     if (!costText) {
                         continue;
                     }
 
                     const cost = parseFloat(costText[0]);
-                    if (isNaN(cost)) {
+                    if (isNaN(cost) || cost === 0) {
                         continue;
                     }
 
