@@ -36,48 +36,26 @@
       {
         "command": "bitburner-companion.open-remote-file",
         "title": "Bitburner: Open Remote File"
+      },
+      {
+        "command": "bitburner-companion.reconnect-relays",
+        "title": "Bitburner: Reconnect Relays"
       }
     ],
     "configuration": {
       "title": "Bitburner Companion",
       "properties": {
-        "bitburner-companion.allowedFileTypes": {
-          "type": "array",
-          "default": [
-            ".js",
-            ".script",
-            ".txt",
-            ".json"
-          ]
-        },
-        "bitburner-companion.allowDeletingFiles": {
-          "type": "boolean",
-          "default": true
-        },
         "bitburner-companion.port": {
+          "title": "Port",
+          "description": "Port to start the server on. To connect to the server, open the game settings and enter this port under \"Remote API\".",
           "type": "number",
           "default": "12525"
         },
-        "bitburner-companion.scriptsFolder": {
-          "type": "string",
-          "default": "."
-        },
-        "bitburner-companion.definitionsFile": {
-          "type": "object",
-          "properties": {
-            "update": {
-              "type": "boolean",
-              "default": true
-            },
-            "path": {
-              "type": "string",
-              "default": "${workspaceFolder}/NetScriptDefinitions.d.ts"
-            }
-          }
-        },
-        "bitburner-companion.pushAllOnConnection": {
-          "type": "boolean",
-          "default": true
+        "bitburner-companion.relayServers": {
+          "title": "Relay Servers",
+          "description": "Addresses of other Bitburner RPC servers to connect to and relay through this server. This effectively allows you to have the game connected to multiple servers at once.",
+          "type": "array",
+          "examples": ["localhost:22222", "127.0.0.1:22222", "ws://localhost:23555"]
         }
       }
     }

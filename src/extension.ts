@@ -46,7 +46,13 @@ export function activate(context: vscode.ExtensionContext) {
 		server.start();
 	});
 
+	const reconnectRelays = vscode.commands.registerCommand("bitburner-companion.reconnect-relays", () => {
+		server.syncRelayConnections();
+	});
+
 	const onConfigChange = vscode.workspace.onDidChangeConfiguration(e => {
+		logger.info(`[config] configuration changed: ${e.affectsConfiguration("bitburner-companion")}`);
+		console.log(e);
 		if (!e.affectsConfiguration("bitburner-companion")) {
 			return;
 		}
@@ -168,7 +174,8 @@ export function activate(context: vscode.ExtensionContext) {
 		openFile,
 		filesystemProvider,
 		remoteFs,
-		ramUsageIcon
+		ramUsageIcon,
+		reconnectRelays,
 	);
 
 	

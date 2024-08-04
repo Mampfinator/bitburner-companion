@@ -4,28 +4,26 @@ import { FileData, Message, Server } from "./interfaces";
 import { BitburnerError, BitburnerErrorCode } from "./errors";
 
 export const DEFAULT_CONFIG: BitburnerConfig = {
-    allowedFileTypes: [".js", ".script", ".txt", ".json"],
-    allowDeletingFiles: true,
     port: 12525, 
-    scriptsFolder: ".",
-    definitionsFile: {
-        update: true,
-        path: "${workspaceFolder}/NetScriptDefinitions.d.ts",
-    },
-    pushAllOnConnection: true,
     messageTimeout: 10000,
+    relayServers: [],
 };
 
 export interface BitburnerConfig {
-    allowedFileTypes: string[];
-    allowDeletingFiles: boolean;
     port: number;
-    scriptsFolder: string;
-    definitionsFile: {update: boolean, path: string};
-    pushAllOnConnection: boolean;
-    messageTimeout?: number;
+    relayServers: string[];
+    messageTimeout: number;
 }
 
+function normalizeAddress(address: string) {
+    if (!address.startsWith("ws://") && !address.startsWith("wss://")) {
+        address = `ws://${address}`;
+    }
+
+    return address;
+}
+
+// TODO: move relay logic to a separate class
 export class BitburnerServer implements Disposable {
     private wss!: WebSocketServer;
 
@@ -41,8 +39,57 @@ export class BitburnerServer implements Disposable {
 
     private messagePromises = new Map<number, {resolve: (response: any) => void, reject: (reason: any) => void}>();
 
+    private recheckTimeout?: NodeJS.Timeout;
+    private failedRelays = new Set<string>();
+
     constructor(private config: BitburnerConfig, public readonly logger: IVSCodeExtLogger) {
         this.start();
+        this.syncRelayConnections();
+
+        this.recheckTimeout = setInterval(async () => {
+            for (const address of this.failedRelays) {
+                this.addRelay(address).catch(() => {});
+            }
+
+            if (this.ws && this.relayQueue.length > 0) {
+                const failed: typeof this.relayQueue = [];
+                while (this.relayQueue.length > 0) {
+                    const entry = this.relayQueue.shift()!;
+                    if (!entry) {
+                        continue;
+                    }
+
+                    const [message, ws, originalId] = entry;
+
+                    try {
+                        const response = await this.send(message);
+                        if (!response) {
+                            // game websocket became unavailable in the meantime. We just try again later.
+                            failed.push(entry);
+                            continue;
+                        }
+
+                        this.logger.trace(`[relay] sent message: ${JSON.stringify(message)} => ${JSON.stringify(response)}`);
+
+                        ws.send(JSON.stringify({
+                            ...message,
+                            id: originalId,
+                            result: response
+                        }));
+                    } catch (err) {
+                        if (err instanceof BitburnerError) {
+                            ws.send(JSON.stringify({
+                                ...message,
+                                id: originalId,
+                                error: err.originalMessage,
+                            }));
+                        }
+                    }
+                }
+
+                this.relayQueue.push(...failed);
+            }
+        }, 20 * 1000);
     }
 
     public start() {
@@ -81,7 +128,88 @@ export class BitburnerServer implements Disposable {
         this.onGameDisconnectedCb = cb;
     }
 
-    setupServer(): WebSocketServer {
+    private readonly relayConnections = new Map<string, WebSocket>();
+    /**
+     * Messages that came in while we were disconnected.
+     */
+    private readonly relayQueue: [Message, WebSocket, number][] = [];
+    /**
+     * Add a relay WebSocket connection. 
+     * Messages from this socket will be sent to the game, and their responses relayed back to the original server.
+     * 
+     * @returns true if the connection was successful, false if not.
+     */
+    public async addRelay(address: string): Promise<void> {
+        address = normalizeAddress(address);
+
+        this.logger.info(`[relay] attempting to connect to to ${address}`);
+
+        let res!: () => void;
+        let rej!: (err: any) => void;
+        const promise = new Promise<void>((resolve, reject) => {
+            res = resolve;
+            rej = reject;
+        });
+        
+        try {
+            const ws = new WebSocket(address);
+            this.setupRelay(ws);
+            
+            ws.on("close", () => {
+                this.relayConnections.delete(address);
+            });
+            ws.on("open", () => {
+                res(); 
+            });
+
+            ws.on("error", err => {
+                this.logger.error(`[relay] ${address}: ${err}`);
+            });
+
+            if (ws.readyState === WebSocket.OPEN) {
+                res();
+            }
+
+            this.logger.info(`[relay] connected to ${address}`);
+
+            this.relayConnections.set(address, ws);
+        } catch (error) {
+            this.failedRelays.add(address);
+            this.logger.info(`[relay] failed to connect to ${address}: ${error}`);
+            res();
+        }
+
+        return promise;
+    }
+
+    private setupRelay(ws: WebSocket) {
+        ws.on("message", async data => {
+            this.logger.trace(`[relay] received message: ${data}`);
+            const message: Message = JSON.parse(data.toString());
+            if (message.jsonrpc !== "2.0" || typeof message.id !== "number") {
+                return;
+            }
+
+            const actualMessage = {...message, id: this.messageCounter++};
+
+            if (this.ws) {
+                const response = await this.send(actualMessage).catch(() => null);
+                if (!response) {
+                    this.logger.error(`[relay] failed to send message: ${data}`);
+                    return;
+                }
+
+                ws.send(JSON.stringify({
+                    ...message,
+                    result: response
+                }));
+            } else {
+                this.relayQueue.push([actualMessage, ws, message.id]);
+            }
+        });
+    }
+
+    private setupServer(): WebSocketServer {
         const wss = new WebSocketServer({port: this.config.port});
 
         wss.on("connection", (ws) => {
@@ -107,7 +235,7 @@ export class BitburnerServer implements Disposable {
         return wss;
     }
 
-    setupClient(ws: WebSocket) {
+    private setupClient(ws: WebSocket) {
         ws.on("close", () => {
             this.ws = undefined;
             this.onGameDisconnectedCb?.();
@@ -162,11 +290,43 @@ export class BitburnerServer implements Disposable {
             this.wss.close();
             this.wss = this.setupServer();
         }
+
+        this.syncRelayConnections();
+    }
+
+    public syncRelayConnections() {
+        this.logger.info(`[server] syncing ${this.config.relayServers.length} relay servers: ${this.config.relayServers.join(", ")}`);
+        const seen = new Set<string>();
+        for (const address of this.config.relayServers.map(address => normalizeAddress(address))) {
+            if (!this.relayConnections.has(address) && !this.failedRelays.has(address)) {
+                this.addRelay(address).catch(() => {});
+            }
+
+            seen.add(address);
+        }
+
+        for (const [address, ws] of [...this.relayConnections.entries()].map(([address, ws]) => [normalizeAddress(address), ws] as const)) {
+            if (seen.has(address)) {
+                continue;
+            }
+            ws.close();
+        }
+
+        for (const address of this.failedRelays) {
+            if (seen.has(address)) {
+                continue;
+            }
+            this.failedRelays.delete(address);
+        }
     }
 
     [Symbol.dispose]() {
         this.ws?.close();
         this.wss.close();
+        for (const ws of this.relayConnections.values()) {
+            ws.close();
+        }
+        clearTimeout(this.recheckTimeout);
     }
     
     // to comply with VSCode's own `Disposable` interface.

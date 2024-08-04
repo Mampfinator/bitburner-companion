@@ -48,7 +48,6 @@ export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvide
     }
 
     async getTreeItem(element: FileData): Promise<vscode.TreeItem> {
-        this.logger.info(`[fs] getTreeItem: ${JSON.stringify(element)}`);
         if (!element.filename) {
             const item = new vscode.TreeItem(element.server, vscode.TreeItemCollapsibleState.Collapsed);
             item.iconPath = new vscode.ThemeIcon("server");
@@ -80,7 +79,6 @@ export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvide
         }
     }
     async getChildren(element?: FileData | undefined): Promise<FileData[]> {
-        this.logger.info(`[fs] getChildren: ${JSON.stringify(element)}`);
         if (!element) {
             const servers = await this.server.getAllServers();
             if (!servers) {
@@ -91,8 +89,6 @@ export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvide
                 server: server.hostname
             }));
         } else {
-            this.logger.info(`[fs] getChildren: ${element.server} ${element.filename}`);
-
             const files = await this.filesystem.readDirectory(vscode.Uri.from({
                 scheme: "bitburner",
                 authority: element.server,
