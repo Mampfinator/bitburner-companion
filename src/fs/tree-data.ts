@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { BitburnerServer } from "../bitburner-server";
 import { BitburnerFilesystemProvider } from "./filesystem-provider";
 import { join } from "path";
-import { IVSCodeExtLogger } from "@vscode-logging/logger";
+import { IChildLogger } from "@vscode-logging/logger";
 import { normalizePath } from "./util";
 
 interface FileData {
@@ -24,7 +24,7 @@ function ensureLeadingSlash(path: string): string {
 }
 
 export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvider<FileData> {
-    private readonly logger: IVSCodeExtLogger;
+    private readonly logger: IChildLogger;
 
     onDidChangeTreeData: vscode.Event<undefined>;
 
@@ -32,7 +32,7 @@ export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvide
         private readonly server: BitburnerServer,
         private readonly filesystem: BitburnerFilesystemProvider,
     ) {
-        this.logger = server.logger;
+        this.logger = server.logger.getChildLogger({ label: "remote-files" });
 
         this.onDidChangeTreeData = (callback) => {
             const interval = setInterval(() => {
@@ -48,9 +48,16 @@ export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvide
     }
 
     async getTreeItem(element: FileData): Promise<vscode.TreeItem> {
+        const uri = vscode.Uri.from({
+            scheme: "bitburner",
+            authority: element.server,
+            path: "/" + normalizePath(element.filename || ""),
+        });
+
         if (!element.filename) {
             const item = new vscode.TreeItem(element.server, vscode.TreeItemCollapsibleState.Collapsed);
             item.iconPath = new vscode.ThemeIcon("server");
+            item.contextValue = "server";
             return item;
         } else {
             // path is a file
@@ -59,21 +66,17 @@ export class BitburnerRemoteFsTreeDataProvider implements vscode.TreeDataProvide
                 fileItem.command = {
                     command: "vscode.open",
                     title: "Open",
-                    arguments: [
-                        vscode.Uri.from({
-                            scheme: "bitburner",
-                            authority: element.server,
-                            path: "/" + normalizePath(element.filename),
-                        }),
-                    ],
+                    arguments: [uri],
                 };
 
-                fileItem.iconPath = vscode.ThemeIcon.File;
+                fileItem.contextValue = "file";
 
+                fileItem.resourceUri = uri;
                 return fileItem;
             } else {
                 const item = new vscode.TreeItem(lastSegment(element.filename), vscode.TreeItemCollapsibleState.Collapsed);
-                item.iconPath = vscode.ThemeIcon.Folder;
+                item.resourceUri = uri;
+                item.contextValue = "folder";
                 return item;
             }
         }

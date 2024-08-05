@@ -2,41 +2,33 @@ import * as vscode from "vscode";
 import { BitburnerServer } from "../bitburner-server";
 import { normalizePath, parseUri } from "../fs/util";
 import { IChildLogger } from "@vscode-logging/logger";
+import { BitburnerStatusBarItem } from "../status-bar";
+import { debug } from "console";
 
 /**
  * Provides static RAM usage display for workspace script files.
  */
 export class RamDisplayProvider implements Disposable, vscode.Disposable {
     public readonly logger;
-    private readonly ramDisplay = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     private readonly onActiveEditorChange: vscode.Disposable;
     private readonly codeLensProvider: RamDisplayCodeLensProvider;
 
     constructor(
         public readonly server: BitburnerServer,
+        public readonly statusBar: BitburnerStatusBarItem,
     ) {
         this.logger = server.logger.getChildLogger({ label: "ram-display" });
 
         this.onActiveEditorChange = vscode.window.onDidChangeActiveTextEditor(async (editor) => {
             this.logger.debug(`[ram-display] onDidChangeActiveTextEditor: ${editor?.document.uri.toString()}`);
             const uri = editor?.document.uri;
+
             if (!uri) {
-                return this.ramDisplay.hide();
-            } 
+                return;
+            }
 
             const ram = await this.getRam(uri);
-
-            if (!ram) {
-                return this.ramDisplay.hide();
-            }
-
-            if (ram < 0) {
-                this.ramDisplay.text = `Syntax error`;
-            } else {
-                this.ramDisplay.text = `${ram} GB`;
-            }
-
-            this.ramDisplay.show();
+            this.statusBar.setCurrentFileRam(ram);
         });
 
         this.codeLensProvider = new RamDisplayCodeLensProvider(this);
@@ -48,7 +40,6 @@ export class RamDisplayProvider implements Disposable, vscode.Disposable {
     }
 
     [Symbol.dispose]() {
-        this.ramDisplay.dispose();
         this.onActiveEditorChange.dispose();
         this.codeLensProvider.dispose();
     }
@@ -128,22 +119,27 @@ function replaceExtension(filename: string, extension: string) {
     return filename.replace(/\.[a-zA-Z]+$/, extension);
 }
 
-function* windows<T, U>(iterable: Iterable<T>, windowSize: number): Iterable<U> {
-    let window: T[] = [];
+type Tuple<T, N extends number, R extends T[] = []> = R["length"] extends N ? R : Tuple<T, N, [T, ...R]>;
+
+/**
+ * Splits an iterable into tuples of length `sliceLength`.
+ */
+function* slices<T, N extends number>(iterable: Iterable<T>, sliceLength: N): Iterable<Tuple<T, N>> {
+    let slice: T[] = [];
     for (const item of iterable) {
-        window.push(item);
-        if (window.length === windowSize) {
-            yield window as U;
-            window = [];
+        slice.push(item);
+        if (slice.length === sliceLength) {
+            yield slice as Tuple<T, N>;
+            slice = [];
         }
     }
 }
 
-function* iterTokens(semanticTokens: vscode.SemanticTokens): Iterable<[number, number, number, number, number]> {
+function* iterTokens(semanticTokens: vscode.SemanticTokens): Iterable<Tuple<number, 5>> {
     let line = 0;
     let char = 0;
 
-    for (const [deltaLine, deltaStartChar, length, type, modifiers] of windows<number, [number, number, number, number, number]>(semanticTokens.data, 5)) {
+    for (const [deltaLine, deltaStartChar, length, type, modifiers] of slices(semanticTokens.data, 5)) {
         line += deltaLine;
         char = (deltaLine === 0) ? char + deltaStartChar : deltaStartChar;
         yield [line, char, length, type, modifiers];
@@ -171,12 +167,12 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
     }
 
     async provideCodeLenses(document: vscode.TextDocument, token: vscode.CancellationToken): Promise<vscode.CodeLens[]> {
-        const hits = await this.getRamUsageHits(document);
-        if (!hits) {
+        const tokens = await this.getRamUsingTokens(document);
+        if (!tokens) {
             return [];
         }
 
-        return hits.map(hit => {
+        return tokens.map(hit => {
             const range = new vscode.Range(hit.line, hit.char, hit.line, hit.char + hit.length);
             return new vscode.CodeLens(range, {
                 command: "noop",
@@ -186,12 +182,12 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
     }
 
 
-    public async getRamUsageHits(document: vscode.TextDocument) {
+    public async getRamUsingTokens(document: vscode.TextDocument) {
         if (!(await vscode.languages.getLanguages()).includes("typescript")) {
             return;
         }
 
-        const hits: { line: number, char: number, length: number, cost: number }[] = [];
+        const tokens: { line: number, char: number, length: number, cost: number }[] = [];
 
         const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>("vscode.provideDocumentSemanticTokensLegend", document.uri);
         const semanticTokens = await vscode.commands.executeCommand<vscode.SemanticTokens>("vscode.provideDocumentSemanticTokens", document.uri);
@@ -201,11 +197,24 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
             return token;
         }
 
+        function getTokenModifiers(modifierBits: number): string[] {
+            const modifiers: string[] = [];
+            for (let i = 0; i < legend.tokenModifiers.length; i++) { 
+                if (modifierBits & (1 << i)) {
+                    modifiers.push(legend.tokenModifiers[i]);
+                }
+            }
+
+            return modifiers;
+        }
+
         for (const [line, startChar, length, tokenType, modifiers] of iterTokens(semanticTokens)) {
+            console.log(getTokenName(line, startChar, length), legend.tokenTypes[tokenType], getTokenModifiers(modifiers));
+
             if (legend.tokenTypes[tokenType] === "variable") {
                 const variableName = getTokenName(line, startChar, length);
                 if (variableName === "window" || variableName === "document") {
-                    hits.push({ line: line, char: startChar, length, cost: 25 });
+                    tokens.push({ line: line, char: startChar, length, cost: 25 });
                 }
             }
 
@@ -224,13 +233,13 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
                         continue;
                     }
 
-                    hits.push({ line: line, char: startChar, length, cost });
+                    tokens.push({ line: line, char: startChar, length, cost });
                 }
             }
         }
 
-        this.logger.debug(`renderRamUsageHints: got ${hits.length} hits`);
+        this.logger.debug(`renderRamUsageHints: found ${tokens.length} tokens (${tokens.reduce((a, b) => a + b.cost, 0)} GB total)`);
 
-        return hits;
+        return tokens;
     }
 }

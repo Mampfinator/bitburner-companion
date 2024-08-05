@@ -7,6 +7,7 @@ import { BitburnerFilesystemProvider } from './fs/filesystem-provider';
 import { BitburnerRemoteFsTreeDataProvider } from './fs/tree-data';
 import { parseUri } from './fs/util';
 import { RamDisplayProvider } from './ram-display';
+import { BitburnerStatusBarItem } from './status-bar';
 
 function getServerSettings(settings: vscode.WorkspaceConfiguration): BitburnerConfig {
 	const config = {} as Partial<BitburnerConfig>;
@@ -32,6 +33,14 @@ export function activate(context: vscode.ExtensionContext) {
 
 	let settings = getServerSettings(vscode.workspace.getConfiguration("bitburner-companion"));
 	const server = new BitburnerServer(settings, logger);
+	const statusItem = new BitburnerStatusBarItem(settings);
+
+	server.onGameConnected(() => {
+		statusItem.setConnectionStatus("connected");
+	});
+	server.onGameDisconnected(() => {
+		statusItem.setConnectionStatus("disconnected");
+	});
 
 	const restartServer = vscode.commands.registerCommand("bitburner-companion.restart-server", () => {
 		server.dispose();
@@ -64,24 +73,8 @@ export function activate(context: vscode.ExtensionContext) {
 
 		settings = getServerSettings(vscode.workspace.getConfiguration("bitburner-companion"));
 		server.updateConfig(settings);
+		statusItem.updateConfig(settings);
 	});
-
-	const watcher = vscode.workspace.createFileSystemWatcher("");
-
-	const statusbarIcon = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-	statusbarIcon.command = "bitburner-companion.restart-server";
-	statusbarIcon.tooltip = "Click to restart Bitburner server";
-	statusbarIcon.text = "BB $(loading~spin)";
-
-	server.onGameConnected(() => {
-		statusbarIcon.text = "BB $(pass)";
-	});
-
-	server.onGameDisconnected(() => {
-		statusbarIcon.text = "BB $(debug-disconnect)";
-	});
-
-	statusbarIcon.show();
 	
 	const filesystem = new BitburnerFilesystemProvider(server);
 
@@ -110,23 +103,7 @@ export function activate(context: vscode.ExtensionContext) {
 		treeDataProvider: new BitburnerRemoteFsTreeDataProvider(server, filesystem),
 	});
 
-
-	const ramUsageIcon = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-	ramUsageIcon.text = "/";
-
-	function setRamUsage(usage: number | null | undefined | void) {
-		if (!usage) {
-			ramUsageIcon.hide();
-		} else if (usage >= 0) {
-			ramUsageIcon.text = `$(bitburner-logo) ${usage.toFixed(2)} GB`;
-			ramUsageIcon.show();
-		} else {
-			ramUsageIcon.text = `$(bitburner-logo) Syntax error`;
-			ramUsageIcon.show();
-		}
-	}
-
-	const ramDisplayProvider = new RamDisplayProvider(server);
+	const ramDisplayProvider = new RamDisplayProvider(server, statusItem);
 	
 
 	context.subscriptions.push(
@@ -134,14 +111,12 @@ export function activate(context: vscode.ExtensionContext) {
 		stopServer, 
 		startServer,
 		onConfigChange,
-		watcher, 
-		server, 
-		statusbarIcon,
+		server,
 		openFile,
 		filesystemProvider,
 		remoteFs,
-		ramUsageIcon,
 		reconnectRelays,
+		statusItem,
 		ramDisplayProvider,
 	);
 }
