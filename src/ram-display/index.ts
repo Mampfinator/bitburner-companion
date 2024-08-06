@@ -3,7 +3,6 @@ import { BitburnerServer } from "../bitburner-server";
 import { normalizePath, parseUri } from "../fs/util";
 import { IChildLogger } from "@vscode-logging/logger";
 import { BitburnerStatusBarItem } from "../status-bar";
-import { debug } from "console";
 
 /**
  * Provides static RAM usage display for workspace script files.
@@ -20,7 +19,7 @@ export class RamDisplayProvider implements Disposable, vscode.Disposable {
         this.logger = server.logger.getChildLogger({ label: "ram-display" });
 
         this.onActiveEditorChange = vscode.window.onDidChangeActiveTextEditor(async (editor) => {
-            this.logger.debug(`[ram-display] onDidChangeActiveTextEditor: ${editor?.document.uri.toString()}`);
+            this.logger.debug(`onDidChangeActiveTextEditor: ${editor?.document.uri.toString()}`);
             const uri = editor?.document.uri;
 
             if (!uri) {
@@ -230,13 +229,13 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
             return token;
         }
 
-        async function getDefinitionTokens([line, char, length, type]: Tuple<number, 4>): Promise<{ token: Tuple<number, 5>, uri: vscode.Uri}[]> {
+        async function getDefinitionTokens([line, char, length, type]: Tuple<number, 4>, uri: vscode.Uri): Promise<{ token: Tuple<number, 5>, uri: vscode.Uri}[]> {
             const locations: vscode.Location[] = await vscode.commands.executeCommand<(vscode.Location | vscode.LocationLink)[]>(
                 "vscode.executeDefinitionProvider", 
-                document.uri, 
+                uri, 
                 new vscode.Position(line, char),
             ).then(locations => locations.map(location => {
-                return location instanceof vscode.Location ? location : new vscode.Location(location.targetUri, location.targetRange);
+                return location instanceof vscode.Location ? location : new vscode.Location(location.targetUri, location.targetSelectionRange ?? location.targetRange);
             }));
 
             return Promise.all(
@@ -260,7 +259,7 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
 
         const costLookup = new Map<string, number | null>();
 
-        async function getHoverCost([line, char]: Tuple<number, 2>, uri: vscode.Uri): Promise<number | null> {
+        async function getHoverCost([line, char,]: Tuple<number, 3>, uri: vscode.Uri): Promise<number | null> {
             const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", uri, new vscode.Position(line, char));
             
             if (!hovers || hovers.length === 0) {
@@ -282,7 +281,7 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
             return cost;
         }
 
-        async function getFunctionBody([line, char]: Tuple<number, 2>, uri: vscode.Uri): Promise<vscode.Range | null> {
+        async function getFunctionBodyRange([line, char]: Tuple<number, 2>, uri: vscode.Uri): Promise<vscode.Range | null> {
             logger.debug(`getFunctionBody started: ${line}, ${char}`);
             
             const document = await vscode.workspace.openTextDocument(uri);
@@ -294,37 +293,32 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
 
             let lineText: string = document.lineAt(line).text;
 
-            while (lineText && (parenState !== 0 || !start)) {
-                if (lineText.length === 0) {
+            while (parenState !== 0 || !start) {
+                if (char >= lineText.length) {
                     try {
                         line++;
                         lineText = document.lineAt(line).text;
+                        char = 0; // Reset char to 0 after moving to next line
                     } catch {
-                        // we've reached the end of the document
+                        // We've reached the end of the document
                         return null;
                     }
-                } else if (lineText[char] === "{") {
+                }
+        
+                const currentChar = lineText[char];
+        
+                if (currentChar === "{") {
                     parenState++;
                     shouldMarkStart = true;
-                } else if (lineText[char] === "}") {
+                } else if (currentChar === "}") {
                     parenState--;
                 } else {
                     if (!start && shouldMarkStart) {
                         start = new vscode.Position(line, char);
                     }
                 }
-
+        
                 char++;
-
-                if (char > lineText.length) {
-                    line++;
-                    try {
-                        lineText = document.lineAt(line).text;
-                    } catch {
-                        return null;
-                    }
-                    char = 0;
-                }
             }
 
             if (!start) {
@@ -335,24 +329,27 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
             return new vscode.Range(start, new vscode.Position(line, char));
         }
 
-        async function getFunctionBodyCost([declarationLine, declarationChar]: Tuple<number, 2>, uri: vscode.Uri): Promise<number | null> {
+        async function getFunctionBodyCost([declarationLine, declarationChar, length]: Tuple<number, 3>, uri: vscode.Uri): Promise<number | null> {
 
-            const searchRange = await getFunctionBody([declarationLine, declarationChar], uri);
-            logger.debug(`getFunctionBodyCost: got search range ${JSON.stringify(searchRange)}`);
+            const searchRange = await getFunctionBodyRange([declarationLine, declarationChar], uri);
             
             if (!searchRange) {
                 return null;
             }
 
+            const tokenName = await getTokenName([declarationLine, declarationChar, length], uri);
+
+            logger.debug(`getFunctionBodyCost: got search range for ${tokenName}@${uri.toString(false)}: (${searchRange.start.line}, ${searchRange.start.character}) - (${searchRange.end.line}, ${searchRange.end.character})`);
+
             const tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>("vscode.provideDocumentRangeSemanticTokens", uri, searchRange);
             if (!tokens) {
                 return null;
             }
-            // prevent infinite loops in recursive functions.
-            // TODO: properly handle recursive functions; this is a hack as it prevents the cost from displayed above the recursive calls.
+
             costLookup.set(`${uri.toString(true)}:${declarationLine}:${declarationChar}`, null);
 
-            let totalCost = 0;
+            // every token is only accounted for *once* for RAM calculation, no matter how many times it appears in a function.
+            let costMap = new Map<string, number>();
 
             // skip function declaration, since we'd end in an infinite loop otherwise
             for (const token of iterTokens(tokens)) {
@@ -360,11 +357,15 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
                     continue;
                 }
 
-                const cost = await getTokenCost(token, uri);
-                if (cost !== null) {
-                    totalCost += cost;
+                const { id, cost } = await getTokenCost(token, uri);
+                if (cost !== null && !costMap.has(id)) {
+                    costMap.set(id, cost);
                 }
             }
+
+            const totalCost = [...costMap.values()].reduce((a, b) => a + b, 0);
+
+            logger.debug(`getFunctionBodyCost: ${tokenName}@${uri.toString(false)}: ${totalCost}GB`);
 
             return totalCost;
         }
@@ -372,67 +373,67 @@ class RamDisplayCodeLensProvider implements vscode.CodeLensProvider, vscode.Disp
         /**
          * Recursively calculate the cost of a given token.
          */
-        async function getTokenCost([line, char, length, type, modifier]: Tuple<number, 5>, uri = document.uri): Promise<number | null> {
+        async function getTokenCost([line, char, length, type, modifier]: Tuple<number, 5>, uri = document.uri): Promise<{id: string, cost: number | null}> {
+            const key = `${uri.toString(true)}:${line}:${char}`;
+
+            if (costLookup.has(key)) {
+                return { id: key, cost: costLookup.get(key) ?? null};
+            }
+
             if (isDefaultLibrary(modifier) && (type === T_VARIABLE || type === T_PROPERTY)) {
                 const name = await getTokenName([line, char, length], uri);
                 // window and document (document as property of window as well)
                 // are special cases that incur a 25 gig RAM cost
                 if (name === "window" || name === "document") {
-                    return 25;
+                    return { id: "window", cost: 25 };
                 }
 
-                return null;
+                return { id: key, cost: null };
             }
 
-            if (type !== T_FUNCTION && type !== T_METHOD) {
-                return null;
+            if (type !== T_FUNCTION && type !== T_METHOD && type !== T_PROPERTY) {
+                return { id: key, cost: null };
             }
 
             if (!isDeclaration(modifier)) {
                 try {
-                    const declarations = await getDefinitionTokens([line, char, length, type]);
+                    const declarations = await getDefinitionTokens([line, char, length, type], uri);
 
-                    for (const {token, uri} of declarations) {
-                        const cost = await getTokenCost(token, uri);
-                        if (cost !== null) {
+                    for (const declaration of declarations) {
+                        const cost = await getTokenCost(declaration.token, declaration.uri);
+                        if (cost.cost !== null) {
                             return cost;
                         }
                     }
 
-                    return null;
+                    return { id: key, cost: null };
                 } catch (e) {
                     console.error(e);
-                    return null;
+                    return { id: key, cost: null };
                 }
             }
 
-            const key = `${uri.toString(true)}:${line}:${char}`;
-
-            if (costLookup.has(key)) {
-                return costLookup.get(key)!;
-            }
-
             // try getting cost from hover text first, as that's cheaper.
-            const hoverCost = await getHoverCost([line, char], uri);
+            const hoverCost = await getHoverCost([line, char, length], uri);
             if (hoverCost !== null) {
                 costLookup.set(key, hoverCost);
-                return hoverCost;
+                return { id: key, cost: hoverCost }; 
             }
 
             // find end of function body and calculate cost similarly
-            const bodyCost = await getFunctionBodyCost([line, char], uri);
+            const bodyCost = await getFunctionBodyCost([line, char, length], uri);
             if (bodyCost !== null) {
                 costLookup.set(key, bodyCost);
-                return bodyCost;
+                return { id: key, cost: bodyCost };
             }
 
             costLookup.set(key, null);
-            return null;
+            return { id: key, cost: null };
         }
 
         for (const [line, startChar, length, tokenType, modifiers] of iterTokens(semanticTokens)) {
             try {
-                const cost = await getTokenCost([line, startChar, length, tokenType, modifiers]);
+                const { cost } = await getTokenCost([line, startChar, length, tokenType, modifiers]);
                 if (cost !== null && cost > 0) {
                     tokens.push({line, char: startChar, length, cost});
                 }
