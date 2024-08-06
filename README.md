@@ -2,7 +2,16 @@
 A (WIP) companion extension for bitburner.
 
 ## Features
-Roadmap:
+
+### Display RAM usage hints for NS functions directly inline
+![image](https://github.com/user-attachments/assets/43a964ab-799e-4119-ba91-3984492216f0)
+
+### Browse and edit ingame files directly from your editor
+![image](https://github.com/user-attachments/assets/fc39bffa-c58b-41d3-a538-d5332733df7b)
+
+
+
+## Roadmap:
 - [x] Browse and edit ingame files from the editor
 - [x] Map files in workspace to files on home and display their static RAM usage
   - current implementation is *incredibly* crude and can't deal with more complex layouts.
